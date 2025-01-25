@@ -553,7 +553,7 @@ breaks()
 
 asan_opts=-DWITH_ASAN:BOOL=ON
 msan_opts=-DWITH_MSAN:BOOL=ON
-export debug_opts="-g -O0 -DEXTRA_DEBUG -Werror=return-type -Wno-error=unused-variable -Wno-error=unused-function -Wno-unused-but-set-variable -Wno-inconsistent-missing-override"
+export debug_opts="-g -O0 -DEXTRA_DEBUG -Werror=return-type -Wno-error=unused-variable -Wno-error=unused-function -Wno-unused-but-set-variable -Wno-inconsistent-missing-override -Wno-deprecated-non-prototype"
 export debug_opts_clang="-gdwarf-4 -fno-limit-debug-info -Wno-error=macro-redefined -Werror=overloaded-virtual -Wno-deprecated-register -Wno-inconsistent-missing-override"
 # FIXME: detect lld version and add -Wl,--threads=24
 export linker_opts_clang="-fuse-ld=lld"
@@ -771,12 +771,28 @@ prepare()
         done < ~/plugin_exclude
     fi
     unset compiler_flags
+    unset cmake_opts
     [ -f ~/compiler_flags ] &&
         compiler_flags="$(cat ~/compiler_flags)"
     [ -f $build/compiler_flags ] &&
         compiler_flags="${compiler_flags} $(cat $build/compiler_flags)"
-    [ $product = mysql ] &&
-        compiler_flags="${compiler_flags} -w -Wno-c++11-narrowing -Wno-reserved-user-defined-literal -Wno-deprecated-copy-with-user-provided-copy -Wno-register -Wno-enum-constexpr-conversion"
+    if [ $product = mysql ]; then
+        # FIXME: only clang flags
+        # -Wno-enum-constexpr-conversion
+        # -Wno-deprecated-copy-with-user-provided-copy
+        # -Wno-reserved-user-defined-literal
+        # -Wno-c++11-narrowing
+        # -Wno-enum-constexpr-conversion
+        # -Wno-deprecated-copy-with-user-provided-copy
+        # -Wno-reserved-user-defined-literal
+        # -Wno-c++11-narrowing
+        #
+        # FIXME:
+        # command-line option ‘-Wno-register’ is valid for C++/ObjC++ but not for C
+        # compiler_flags="${compiler_flags} -w -Wno-c++11-narrowing -Wno-reserved-user-defined-literal -Wno-deprecated-copy-with-user-provided-copy -Wno-register -Wno-enum-constexpr-conversion"
+        # WITH_BOOST is relative to build dir, make it common for all builds
+        cmake_opts="-DDOWNLOAD_BOOST=1 -DWITH_BOOST=.."
+    fi
     compiler_flags="$(echo $compiler_flags)"
     unset profile_flags
     if [ -f ~/profile_flags ]
@@ -815,6 +831,7 @@ prepare()
         -DWITHOUT_ABI_CHECK:BOOL=OFF \
         `# some older versions fail bootstrap on MD5 without SSL bundled` \
         -DWITH_SSL=$(for_mariadb bundled system) \
+        $cmake_opts \
         $flavor_opts \
         $cclauncher \
         $plugins \
