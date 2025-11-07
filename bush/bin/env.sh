@@ -188,7 +188,8 @@ alias mtrzz="mtrz --debug-sync-timeout=2"
 alias mtrm="mtrz --suite=main"
 alias mtrv="mtrz --suite=versioning"
 alias mtrvv="mtrz --suite=period"
-alias mtrg="mtr --manual-gdb $mtrg_opts"
+alias mtrg="mtr --no-check --manual-gdb $mtrg_opts"
+alias mtrr="mtr --no-check --rr --mysqld=--use-stat-tables=never --mysqld=--innodb_use_native_aio=0"
 alias mtrvvg="mtrg --suite=period"
 alias mtrvg="mtrg --suite=versioning"
 alias mtrp="mtrz --suite=parts"
@@ -244,6 +245,7 @@ mtrval()
         --valgrind=--track-origins=yes \
         --valgrind=--num-callers=50 \
         --valgrind=--log-file=${log_dir}/badmem.log \
+        --mysqld=--debug-assert-on-not-freed-memory=0 \
         $supp_opt \
         "$@"
 }
@@ -381,7 +383,12 @@ rund()
         cd "${bush_dir}"
         defaults=./mysqld.cnf
     fi
-    exec gdb -q $opt_run --args "${opt}/bin/mysqld" "--defaults-file=$defaults" --plugin-maturity=experimental --plugin-load=test_versioning $opt_debug_gdb "$@"
+    unset opt_plugins
+    if [ $product = mariadb ]
+    then
+        opt_plugins="--plugin-maturity=experimental --plugin-load=test_versioning"
+    fi
+    exec gdb -q $opt_run --args "${opt}/bin/mysqld" "--defaults-file=$defaults" $opt_plugins $opt_debug_gdb "$@"
 )}
 export -f rund
 
@@ -396,13 +403,6 @@ export -f runt
 
 runrr()
 {(
-    if [ "$1" = -start ]
-    then
-        opt_run="-ex start"
-        shift
-    else
-        opt_run="-ex run"
-    fi
     if [ -n "$1" -a -f "$1" ]
     then
         defaults="$1"
@@ -411,7 +411,12 @@ runrr()
         cd "${bush_dir}"
         defaults=./mysqld.cnf
     fi
-    exec rr record "${opt}/bin/mysqld" "--defaults-file=$defaults" --plugin-maturity=experimental --plugin-load=test_versioning $opt_debug_gdb $opt_silent "$@"
+    unset opt_plugins
+    if [ $product = mariadb ]
+    then
+        opt_plugins="--plugin-maturity=experimental --plugin-load=test_versioning"
+    fi
+    exec rr record "${opt}/bin/mysqld" "--defaults-file=$defaults" $opt_plugins $opt_debug_gdb $opt_silent "$@"
 )}
 export -f runrr
 
@@ -430,7 +435,7 @@ binlog()
       log_file="${build}/mysql-test/var/mysqld.1/data/master-bin.000001"
 
     exec $run_gdb "${opt}/bin/mysqlbinlog" "--defaults-file=${defaults}" \
-        --local-load="${build}/var/tmp" -v "$@" "$log_file"
+        --local-load="${build}/var/tmp" -v --base64-output=DECODE-ROWS "$@" $log_file
 )}
 export -f binlog
 
@@ -551,14 +556,51 @@ breaks()
     done
 }
 
+# Use like: master rund [args]
+# Then master_setup (once)
+master()
+{
+    local cmd=$1
+    shift
+    $cmd --log_bin=binlog --binlog_format=ROW --max_connections=10000 --server_id=1 "$@"
+}
+
+master_setup()
+{
+mysql <<-EOF
+	DELETE FROM mysql.user WHERE user='';
+	GRANT REPLICATION SLAVE ON *.* TO 'repl_user'@'%' IDENTIFIED BY 'repl_pass';
+	FLUSH PRIVILEGES;
+EOF
+}
+
+# Use like: slave rund [args]
+# Then slave_setup port_number (once)
+slave()
+{
+    local cmd=$1
+    shift
+    $cmd --max_connections=10000 --server_id=2 "$@"
+}
+
+slave_setup()
+{
+mysql<<-EOF
+	CHANGE MASTER TO MASTER_HOST='127.0.0.1', MASTER_PORT=$1, MASTER_USER='repl_user', MASTER_PASSWORD='repl_pass', MASTER_USE_GTID=slave_pos;
+	START SLAVE;
+EOF
+}
+
+
 asan_opts=-DWITH_ASAN:BOOL=ON
 msan_opts=-DWITH_MSAN:BOOL=ON
-export debug_opts="-g -O0 -DEXTRA_DEBUG -Werror=return-type -Wno-error=unused-variable -Wno-error=unused-function -Wno-unused-but-set-variable -Wno-inconsistent-missing-override -Wno-deprecated-non-prototype"
-export debug_opts_clang="-gdwarf-4 -fno-limit-debug-info -Wno-error=macro-redefined -Werror=overloaded-virtual -Wno-deprecated-register -Wno-inconsistent-missing-override"
-# FIXME: detect lld version and add -Wl,--threads=24
-export linker_opts_clang="-fuse-ld=lld"
+export debug_opts="-g -O0 -DEXTRA_DEBUG -Werror=return-type -Wno-error=unused-variable -Wno-error=unused-function -Wno-unused-but-set-variable -Wno-deprecated-declarations -Wno-frame-larger-than"
+export debug_opts_clang="-gdwarf-4 -fno-limit-debug-info -Wno-error=macro-redefined -Werror=overloaded-virtual -Wno-deprecated-register -Wno-inconsistent-missing-override -Wno-deprecated-literal-operator -Wno-nontrivial-memcall -Wno-deprecated-non-prototype"
+export debug_opts_linker=""
+# FIXME: detect lld version for -Wl,--threads
+export linker_opts_clang="-fuse-ld=lld -Wl,--image-base=0x140000000 -Wl,--threads=24"
 # FIXME: implement common_opts and common_opts_gcc
-export common_opts="-Wno-deprecated-declarations"
+export common_opts="-Wno-deprecated-declarations -Wno-deprecated-literal-operator -Wno-nontrivial-memcall"
 export common_opts_gcc="-Wa,-mbranches-within-32B-boundaries"
 export common_opts_clang="-mbranches-within-32B-boundaries -Wno-unused-command-line-argument -Wno-deprecated-non-prototype"
 
@@ -757,6 +799,36 @@ EOF
 
 ### New prepare development END
 
+# Usage:
+# your_array=()
+# push_back your_array value1 [value2] ...
+# echo "${your_array[@]}"
+push_back()
+{
+    arr=$1; shift
+    for val in "$@"
+    do
+        eval $arr[\${#$arr[@]}]=\$val
+    done
+}
+export -f push_back
+
+get_linker_flags()
+{
+    local suffix=${1:+_${1}}
+    shift
+    local opts=${1:+="$*"}
+    [ -z "$opts" ] &&
+        return
+    for f in CMAKE_EXE_LINKER_FLAGS \
+             CMAKE_SHARED_LINKER_FLAGS \
+             CMAKE_MODULE_LINKER_FLAGS
+    do
+        push_back cmake_flags "-D${f}${suffix^^}:STRING${opts}"
+    done
+}
+export -f get_linker_flags
+
 prepare()
 {(
     mkdir -p "${build}"
@@ -771,7 +843,7 @@ prepare()
         done < ~/plugin_exclude
     fi
     unset compiler_flags
-    unset cmake_opts
+    cmake_flags=()
     [ -f ~/compiler_flags ] &&
         compiler_flags="$(cat ~/compiler_flags)"
     [ -f $build/compiler_flags ] &&
@@ -791,7 +863,7 @@ prepare()
         # command-line option ‘-Wno-register’ is valid for C++/ObjC++ but not for C
         # compiler_flags="${compiler_flags} -w -Wno-c++11-narrowing -Wno-reserved-user-defined-literal -Wno-deprecated-copy-with-user-provided-copy -Wno-register -Wno-enum-constexpr-conversion"
         # WITH_BOOST is relative to build dir, make it common for all builds
-        cmake_opts="-DDOWNLOAD_BOOST=1 -DWITH_BOOST=.."
+        push_back cmake_flags -DDOWNLOAD_BOOST=1 -DWITH_BOOST=..
     fi
     compiler_flags="$(echo $compiler_flags)"
     unset profile_flags
@@ -800,6 +872,7 @@ prepare()
         profile_flags="$(cat ~/profile_flags)"
         profile_flags="$(echo $profile_flags)"
     fi
+    # TODO: merge cclauncher into cmake_flags?
     cclauncher="-DCMAKE_CXX_COMPILER_LAUNCHER= -DCMAKE_C_COMPILER_LAUNCHER="
     [ -x $(which ccache) ] &&
         cclauncher="-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
@@ -807,9 +880,11 @@ prepare()
         cclauncher="${cclauncher} -DWITH_SASL=no -DWITH_FIDO=none -DWITH_BUNDLED_LIBEVENT:BOOL=OFF -D WITH_BUNDLED_MEMCACHED:BOOL=OFF -DWITH_EMBEDDED_SERVER:BOOL=OFF -DWITH_EMBEDDED_SHARED_LIBRARY:BOOL=OFF -DWITH_HYPERGRAPH_OPTIMIZER:BOOL=OFF -DWITH_NDBAPI_EXAMPLES:BOOL=OFF -DWITH_NDBCLUSTER_STORAGE_ENGINE:BOOL=OFF -DWITH_NDBMTD:BOOL=OFF -DWITH_NDB_BINLOG:BOOL=OFF -DWITH_NDB_NODEJS:BOOL=OFF -DWITH_NDB_TEST:BOOL=OFF -DWITH_ROUTER:BOOL=OFF"
     # TODO: add DISABLE_PSI_FILE
     eval flavor_opts=\$${flavor}_opts
+    get_linker_flags debug $debug_opts_linker
     cmake-ln -Wno-dev \
         -DCMAKE_INSTALL_PREFIX:STRING=${opt} \
         -DCMAKE_BUILD_TYPE:STRING=Debug \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         -DCMAKE_CXX_FLAGS_DEBUG:STRING="$debug_opts $compiler_flags $profile_flags" \
         -DCMAKE_C_FLAGS_DEBUG:STRING="$debug_opts $compiler_flags $profile_flags" \
         -DCMAKE_ASM_FLAGS_DEBUG:STRING="$debug_opts $compiler_flags $profile_flags" \
@@ -819,6 +894,10 @@ prepare()
         -DCMAKE_EXE_LINKER_FLAGS:STRING="$profile_flags $CMAKE_LDFLAGS" \
         -DCMAKE_MODULE_LINKER_FLAGS:STRING="$profile_flags $CMAKE_LDFLAGS" \
         -DCMAKE_SHARED_LINKER_FLAGS:STRING="$profile_flags $CMAKE_LDFLAGS" \
+        -DSTACK_DIRECTION=-1 \
+        -DWITHOUT_ABI_CHECK=YES \
+        -DENABLED_PROFILING=NO \
+        -DENABLE_DTRACE=NO \
         -DSECURITY_HARDENED:BOOL=FALSE \
         -DMYSQL_MAINTAINER_MODE:STRING=OFF \
         -DUPDATE_SUBMODULES:BOOL=OFF \
@@ -827,11 +906,12 @@ prepare()
         -DWITH_CSV_STORAGE_ENGINE:BOOL=OFF \
         -DWITH_WSREP:BOOL=OFF \
         -DWITH_MARIABACKUP:BOOL=OFF \
+        -DWITH_READLINE:BOOL=ON \
         -DWITH_SAFEMALLOC:BOOL=OFF \
         -DWITHOUT_ABI_CHECK:BOOL=OFF \
         `# some older versions fail bootstrap on MD5 without SSL bundled` \
         -DWITH_SSL=$(for_mariadb bundled system) \
-        $cmake_opts \
+        "${cmake_flags[@]}" \
         $flavor_opts \
         $cclauncher \
         $plugins \
@@ -1334,6 +1414,7 @@ option_check()
 {
     sed -Ene '/^'"$1"'/ { s/^.*=(.+)$/\1/; p; }' "$2"
 }
+export -f option_check
 
 option_set()
 {
@@ -1344,6 +1425,7 @@ cm_option_check()
 {
     option_check "$1" "${build}/CMakeCache.txt"
 }
+export -f cm_option_check
 
 cm_option_set()
 {
@@ -1374,11 +1456,13 @@ bush_cm_onoff_option()
         echo $_val
     fi
 }
+export -f bush_cm_onoff_option
 
 asan()
 {
     bush_cm_onoff_option WITH_ASAN:BOOL 'Usage: asan [off|on]' "$@"
 }
+export -f asan
 
 msan()
 {(
@@ -1386,11 +1470,13 @@ msan()
     shift
     if [ "$nval" = ON ]
     then
-        local msan_libs="/home/midenok/src/mariadb/msan-libs"
-        local msan_include="${msan_libs}/include"
+        # local msan_libs="/home/midenok/src/mariadb/msan-libs"
+        # local msan_include="${msan_libs}/include"
         #local msan_include2="${msan_libs}/build/llvm-toolchain-14-14.0.6/libcxxabi/include"
-        export CMAKE_C_FLAGS="-O2 ${CMAKE_C_FLAGS:+$CMAKE_C_FLAGS }-Wno-unused-command-line-argument -L${msan_libs} -I${msan_include} -stdlib=libc++ -lc++abi -Wl,-rpath,${msan_libs}"
-        export CMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:+$CMAKE_CXX_FLAGS }-std=c++11"
+        # export CMAKE_C_FLAGS="-O2 ${CMAKE_C_FLAGS:+$CMAKE_C_FLAGS }-Wno-unused-command-line-argument -L${msan_libs} -I${msan_include} -stdlib=libc++ -lc++abi -Wl,-rpath,${msan_libs}"
+        # export CMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:+$CMAKE_CXX_FLAGS }-std=c++11 -fsanitize-blacklist=/tmp/msan.supp"
+        export CMAKE_C_FLAGS="${CMAKE_C_FLAGS:+$CMAKE_C_FLAGS } -fsanitize-blacklist=/tmp/msan.supp"
+        export CMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:+$CMAKE_CXX_FLAGS } -fsanitize-blacklist=/tmp/msan.supp"
         bush_cm_onoff_option WITH_MSAN:BOOL 'Usage: msan [off|on]' ON \
             -DWITH_EMBEDDED_SERVER=OFF -DWITH_UNIT_TESTS=OFF \
             -DWITH_INNODB_{BZIP2,LZ4,LZMA,LZO,SNAPPY}=OFF \
@@ -1413,6 +1499,7 @@ emb()
 {
     bush_cm_onoff_option WITH_EMBEDDED_SERVER:BOOL 'Usage: emb [off|on]' "$@"
 }
+export -f emb
 
 wsrep()
 {

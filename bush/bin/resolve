@@ -1,34 +1,16 @@
 #!/bin/bash
-opt=$1
-curpath=`pwd`
-cd $src
-while true
-do
-    src=(`git diff --name-only $curpath|uniq`)
-    [ -n "${src[0]}" ] ||
-        break
+set -e
+set -o pipefail
+files=($(git diff --name-only 2> /dev/null|uniq))
+set +e
+if [ -n "${files[0]}" ]
+then
+    files=($(grep -l '^<<<<<<< ' "${files[@]}"))
 
-    if grep -q '^<<<<<<< ' "${src[@]}"
+    if [ -n "${files[0]}" ]
     then
-        (emacs "${src[@]}") ||
-            break
-
-        ([ "$opt" = only ] || grep -q '^<<<<<<< ' "${src[@]}") &&
-            break
-
-        if [ "$opt" = full ]
-        then
-            make -j8 ||
-                break
-        fi
+        emacs "${files[@]}"
     fi
+fi
 
-    git add "${src[@]}" ||
-        break
-
-    git rebase --continue ||
-        break
-done
-
-
-
+echo "No conflicts to resolve."

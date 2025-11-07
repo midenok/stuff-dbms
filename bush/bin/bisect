@@ -13,5 +13,6 @@ done | xargs git bisect skip
 git bisect new $b
 git bisect old $a
 
+# Find first bad commit (default)
+# use bisect a b -g test for first good commit
 git bisect run bisect-run-simple.sh "$@"
-git bisect reset
