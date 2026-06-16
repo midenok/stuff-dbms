@@ -1766,7 +1766,8 @@ git_merge_repos()
     local dst_repo=$2
     local cur_src_branch=$3
     local prefix=$(basename "$bush_dir")
-    local max_branches=10
+    # TODO: make it configurable for bareize()
+    local max_branches=50
 
     # Out variable
     new_branch=""
@@ -1774,18 +1775,30 @@ git_merge_repos()
     echo ":: Migrating last ${max_branches} local branches"
 
     local src_branch
+    # Prepend the list of branches with current branch so it is guaranteed to be included in the list
+    local src_branches=$(echo $cur_src_branch; git_list_branches \
+        "$src_repo" --sort=-committerdate --count=$max_branches |
+        grep -v "$cur_src_branch")
 
     while read -r src_branch
     do
         [[ -z "$src_branch" ]] &&
             continue
 
+        local src_commit=$(git -C "$src_repo" rev-parse "refs/heads/$src_branch^{commit}")
         local dst_branch="$src_branch"
+        local skip_branch=false
 
         # If dst_branch already exists make it unique by prefixing
         local i=0
         while git -C "$dst_repo" show-ref --verify --quiet "refs/heads/$dst_branch"
         do
+            dst_commit=$(git -C "$dst_repo" rev-parse "refs/heads/$dst_branch^{commit}")
+            if [[ "$dst_commit" == "$src_commit" ]]
+            then
+                skip_branch=true
+                break
+            fi
             dst_branch="${prefix}_${i}/${src_branch}"
             ((i++)) || true
         done
@@ -1798,10 +1811,17 @@ git_merge_repos()
             cur="* "
         fi
 
-        [[ "$src_branch" != "$dst_branch" ]] &&
+        if $skip_branch
+        then
+            suff=" (exists)"
+        elif [[ "$src_branch" != "$dst_branch" ]]
+        then
             suff="-> ${dst_branch}"
+        fi
 
         echo "${cur}${src_branch}${suff}"
+        $skip_branch &&
+            continue
 
         # Now the main magic happens, import src_branch to dst_repo
         git -C "$dst_repo" fetch "$src_repo" "+refs/heads/$src_branch:refs/heads/$dst_branch" --quiet
@@ -1818,8 +1838,7 @@ git_merge_repos()
         then
             echo ":: Warning: source branch '$src_branch' broken tracking remote='$remote' merge='$merge'; skipped tracking restore"
         fi
-        # FIXME: there can be no current branch in last branches vvv, add cur branch explicitly
-    done < <(git_list_branches "$src_repo" --sort=-committerdate --count=$max_branches)
+    done <<< $src_branches
 
     [[ -z "$new_branch" ]] &&
         die2 ":: Failed to map current src branch '$cur_src_branch' into dst_repo!"
@@ -1847,7 +1866,7 @@ export -f git_merge_repos
 
 bareize()
 {(
-    # Avoid need git() wrapper
+    # Avoid git() wrapper
     unset git
     cd "$src"
     git_check_wt ||
