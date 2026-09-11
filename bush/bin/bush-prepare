@@ -190,7 +190,25 @@ prepare_source()
             $verbose git submodule update --init --recursive $submodules
         $verbose git remote add $remote_add
     else
-        $verbose rsync -aP "${homepath}/${copy_from}/src/" src
+        local from="${homepath}/${copy_from}/src"
+        local common_dir git_dir
+        common_dir=$(git -C "$from" rev-parse --git-common-dir 2>/dev/null) || common_dir=
+        git_dir=$(git -C "$from" rev-parse --git-dir 2>/dev/null) || git_dir=
+
+        if [ -n "$common_dir" -a "$common_dir" != "$git_dir" ]
+        then
+            # Source is a linked worktree (e.g. attached to a bare repo): its
+            # .git is a gitlink pointing at the source's own worktree admin
+            # dir. A plain copy would carry that stale gitlink and leave the
+            # copy unregistered. Instead register a fresh worktree for the copy
+            # at the same commit, then sync the working-tree state over it.
+            common_dir=$(cd "$from" && cd "$common_dir" && pwd)
+            local head=$(git -C "$from" rev-parse HEAD)
+            $verbose git -C "$common_dir" worktree add --detach "$PWD/src" "$head"
+            $verbose rsync -aP --exclude=/.git "${from}/" src
+        else
+            $verbose rsync -aP "${from}/" src
+        fi
     fi
 )}
 
