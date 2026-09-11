@@ -8,6 +8,7 @@ from_home=$(cat <<EOF
 .screenrc
 .local
 .config
+.claude
 .aptitude
 .bash_profile
 EOF
