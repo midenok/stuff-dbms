@@ -889,7 +889,10 @@ prepare()
         cclauncher="${cclauncher} -DWITH_SASL=no -DWITH_FIDO=none -DWITH_BUNDLED_LIBEVENT:BOOL=OFF -D WITH_BUNDLED_MEMCACHED:BOOL=OFF -DWITH_EMBEDDED_SERVER:BOOL=OFF -DWITH_EMBEDDED_SHARED_LIBRARY:BOOL=OFF -DWITH_HYPERGRAPH_OPTIMIZER:BOOL=OFF -DWITH_NDBAPI_EXAMPLES:BOOL=OFF -DWITH_NDBCLUSTER_STORAGE_ENGINE:BOOL=OFF -DWITH_NDBMTD:BOOL=OFF -DWITH_NDB_BINLOG:BOOL=OFF -DWITH_NDB_NODEJS:BOOL=OFF -DWITH_NDB_TEST:BOOL=OFF -DWITH_ROUTER:BOOL=OFF"
     # TODO: add DISABLE_PSI_FILE
     flavor_safe=${flavor//[^a-zA-Z0-9_]/_}
-    eval flavor_opts=\$${flavor_safe}_opts
+    flavor_opts_var="${flavor_safe}_opts"
+    flavor_opts=
+    [[ $flavor_opts_var == [a-zA-Z_]* ]] &&
+        flavor_opts="${!flavor_opts_var}"
     get_linker_flags debug $debug_opts_linker
 
     cmake-ln -Wno-dev \
@@ -966,7 +969,11 @@ prepare_sn()
     # Note: SECURITY_HARDENED or MYSQL_MAINTAINER_MODE?
     # profile_flags="$profile_flags"
     compiler_flags="-Wa,-mbranches-within-32B-boundaries $compiler_flags"
-    eval flavor_opts=\$${flavor}_opts
+    flavor_safe=${flavor//[^a-zA-Z0-9_]/_}
+    flavor_opts_var="${flavor_safe}_opts"
+    flavor_opts=
+    [[ $flavor_opts_var == [a-zA-Z_]* ]] &&
+        flavor_opts="${!flavor_opts_var}"
     # Disables ccache
     #    -DCMAKE_C_COMPILER:FILEPATH=/usr/bin/gcc \
     #    -DCMAKE_CXX_COMPILER:FILEPATH=/usr/bin/g++ \
@@ -1100,7 +1107,11 @@ prepare_snow()
     #
     # Note: SECURITY_HARDENED or MYSQL_MAINTAINER_MODE?
     # profile_flags="$profile_flags"
-    eval flavor_opts=\$${flavor}_opts
+    flavor_safe=${flavor//[^a-zA-Z0-9_]/_}
+    flavor_opts_var="${flavor_safe}_opts"
+    flavor_opts=
+    [[ $flavor_opts_var == [a-zA-Z_]* ]] &&
+        flavor_opts="${!flavor_opts_var}"
     # Disables ccache
     #    -DCMAKE_C_COMPILER:FILEPATH=/usr/bin/gcc \
     #    -DCMAKE_CXX_COMPILER:FILEPATH=/usr/bin/g++ \
@@ -1760,6 +1771,27 @@ git_list_branches()
 }
 export -f git_list_branches
 
+# Returns success if creating refs/heads/$2 in repo $1 would clash with an
+# existing ref due to git's directory/file layout (e.g. ref 'refs/heads/10.11'
+# blocks 'refs/heads/10.11/HEAD' and vice versa). Exact matches are not counted
+# here; the caller handles those separately.
+git_ref_df_conflict()
+{
+    local repo=$1
+    local ref="refs/heads/$2"
+    local existing
+    while read -r existing
+    do
+        [[ -z "$existing" || "$existing" == "$ref" ]] &&
+            continue
+        # existing ref is a parent path of ref, or ref is a parent path of it
+        [[ "$ref" == "$existing/"* || "$existing" == "$ref/"* ]] &&
+            return 0
+    done < <(git -C "$repo" for-each-ref --format='%(refname)' refs/heads/)
+    return 1
+}
+export -f git_ref_df_conflict
+
 git_merge_repos()
 {
     local src_repo=$1
@@ -1785,21 +1817,33 @@ git_merge_repos()
         [[ -z "$src_branch" ]] &&
             continue
 
-        local src_commit=$(git -C "$src_repo" rev-parse "refs/heads/$src_branch^{commit}")
+        local src_commit=$(git -C "$src_repo" rev-parse "$src_branch^{commit}")
         local dst_branch="$src_branch"
         local skip_branch=false
 
-        # If dst_branch already exists make it unique by prefixing
+        [[ "$src_branch" == "HEAD" ]] &&
+            dst_branch="${prefix}/HEAD"
+
+        # If dst_branch already exists (or would clash with an existing ref's
+        # directory/file layout) make it unique by prefixing
         local i=0
-        while git -C "$dst_repo" show-ref --verify --quiet "refs/heads/$dst_branch"
+        while true
         do
-            dst_commit=$(git -C "$dst_repo" rev-parse "refs/heads/$dst_branch^{commit}")
-            if [[ "$dst_commit" == "$src_commit" ]]
+            if git -C "$dst_repo" show-ref --verify --quiet "refs/heads/$dst_branch"
             then
-                skip_branch=true
+                dst_commit=$(git -C "$dst_repo" rev-parse "$dst_branch^{commit}")
+                if [[ "$dst_commit" == "$src_commit" ]]
+                then
+                    skip_branch=true
+                    break
+                fi
+            elif ! git_ref_df_conflict "$dst_repo" "$dst_branch"
+            then
                 break
             fi
-            dst_branch="${prefix}_${i}/${src_branch}"
+            local pfx=$prefix
+            ((i)) && pfx="${pfx}_${i}"
+            dst_branch="${pfx}/${src_branch}"
             ((i++)) || true
         done
 
@@ -1824,7 +1868,7 @@ git_merge_repos()
             continue
 
         # Now the main magic happens, import src_branch to dst_repo
-        git -C "$dst_repo" fetch "$src_repo" "+refs/heads/$src_branch:refs/heads/$dst_branch" --quiet
+        git -C "$dst_repo" fetch "$src_repo" "+$src_branch:$dst_branch" --quiet
 
         # Reattach the tracking data
         local remote=$(git -C "$src_repo" config "branch.$src_branch.remote" || true)
@@ -1846,6 +1890,12 @@ git_merge_repos()
     true
 }
 export -f git_merge_repos
+
+git_ban_submodules()
+{
+    git config submodule."storage/columnstore/columnstore".update none
+    git config submodule."storage/rocksdb/rocksdb".update none
+}
 
 ### Conversion to v2, the below commands are adapted for help system of v2
 ### The above commands work too, but without help
@@ -1910,17 +1960,27 @@ bareize()
         # So, work this out via tmp branch:
         git fetch "$src" "refs/stash:refs/tmp/${id}"
 
-        # FIXME: replace by rm
-        src_dir=$(basename "$src")
-        nogit=$(mktemp -up $bush_dir "${src_dir}_XXXXXX")
-        mv "$src" "$nogit"
-
+        rm -rf "$src"
         git worktree add --force "$src" "$new_branch"
 
         cd "$src"
+
+        # Recover detached head
+        if [[ "$branch" == "HEAD" ]]
+        then
+            echo ":: Recovering detached HEAD"
+            git checkout --detach HEAD
+            git branch -D "$new_branch"
+        fi
+
         echo ":: Restoring your stuff"
-        # Skip first two stash-internal commits: metadata, index; the third one is untracked files
+        # Restore staged changes
+        git restore --recurse-submodules=no -s "refs/tmp/${id}^2" --staged -- .
+        # Restore unstaged changes
+        git restore --recurse-submodules=no -s "refs/tmp/${id}" -W -- .
+        # Restore untracked files
         git restore --recurse-submodules=no --overlay -s "refs/tmp/${id}^3" -W -- .
+        # FIXME: uncomment
         # git update-ref -d "refs/tmp/${id}"
         # FIXME: submodule update --init? something broken with them?
     else
