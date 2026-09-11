@@ -207,6 +207,15 @@ prepare_source()
             local head=$(git -C "$from" rev-parse HEAD)
             $verbose git -C "$common_dir" worktree add --detach "$PWD/src" "$head"
             $verbose rsync -aP --exclude=/.git "${from}/" src
+            (
+                cd src
+                # worktree add only stubs submodule gitdirs and rsync brought
+                # over the source's working files; clear both so a fresh init
+                # can populate this worktree's submodules cleanly.
+                $verbose git submodule deinit -f --all 2>/dev/null || true
+                $verbose rm -rf "$(git rev-parse --git-dir)/modules"
+                $verbose git submodule update --init --recursive $submodules
+            )
         else
             $verbose rsync -aP "${from}/" src
         fi
