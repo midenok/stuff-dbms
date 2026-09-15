@@ -1,14 +1,17 @@
 #!/bin/bash
 from_home=$(cat <<EOF
 .gdbinit
-.emacs
+.gdbinit.py
 .gitconfig
+.emacs
+.emacs.d
 .inputrc
 .profile
 .screenrc
 .local
 .config
 .claude
+.claude.json
 .aptitude
 .bash_profile
 EOF

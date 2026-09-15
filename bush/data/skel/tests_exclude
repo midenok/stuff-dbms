@@ -1,4 +1,7 @@
+binlog.binlog_truncate_active_log :
+binlog.binlog_truncate_multi_log :
 encryption.innodb_encrypt_log_corruption :
+innodb.create_isl_with_direct :
 innodb_gis.kill_server :
 innodb_gis.rtree_compress :
 innodb_gis.rtree_compress2 :
@@ -7,17 +10,41 @@ innodb_gis.rtree_split :
 innodb.group_commit_binlog_pos :
 innodb.group_commit_binlog_pos_no_optimize_thread :
 innodb.insert_debug :
+innodb.instant_alter_crash :
 innodb.log_corruption :
 innodb.log_file :
 innodb.log_file_name :
 innodb.log_file_name_debug :
 innodb.log_file_size :
+innodb.log_file_size_online :
 innodb.read_only_recover_committed :
 innodb.read_only_recovery :
+innodb.doublewrite :
+innodb.doublewrite_debug :
+innodb.undo_space_dblwr :
+innodb.undo_leak_fail :
+innodb.sys_defragment_fail :
+innodb.sys_defragment :
+innodb.innodb_uninstall :
+main.innodb_ignore_builtin :
+main.innodb_load_xa :
 main.func_regexp_pcre :
 main.sum_distinct-big :
 main.tc_heuristic_recover :
+main.mysql_upgrade :
+# main.ssl_fp :
 mariabackup.huge_lsn :
+multi_source.mariadb-dump_slave :
 rpl.rpl_semi_sync_after_sync :
 rpl.rpl_semi_sync_after_sync_row :
 rpl.rpl_semi_sync_event_after_sync :
+rpl.rpl_semi_sync_fail_over :
+rpl.rpl_auditing :
+plugins.server_audit_query_id :
+sys_vars.innodb_flush_method_func :
+sys_vars.wsrep_on_without_provider :
+main.long_unique_innodb_debug2 : tmp
+main.backup_locks : tmp
+innodb.log_archive :
+innodb.sys_truncate_debug :
+sys_vars.session_track_system_variables_basic :

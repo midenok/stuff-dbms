@@ -2007,6 +2007,12 @@ bareize()
 )}
 export -f bareize
 
+push-branch()
+{
+    while ! git push mariadb; do sleep 10m; done
+}
+export -f push-branch
+
 [[ -f ~/work.sh ]] &&
   source ~/work.sh
 
